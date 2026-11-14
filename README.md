@@ -1,5 +1,12 @@
 # fluke-fpq
 
+Disclosure: This project was in part to learn how good or bad AI assisted
+software development can work.  It took a bit over a month to do and was
+using Opencode Go to expand on my simple serial-remote-bridge-to-VM method
+to develop a CLI in Python.  Files in "bootstrap_files_(no-AI)" were created
+by hand by me, along with this disclosure path.  Everything else in the
+project was created by AI agents.
+
 > **Disclaimer:** Provided **as is**, without warranty of any kind, express or
 > implied; no guarantee of accuracy, completeness or fitness for any purpose.
 > Use at your own risk; the authors accept no liability for any loss or
