@@ -1,0 +1,45 @@
+This file guides thru how to configure a serial loopback plug so that you can sniff and redirect
+the VR1710 serial communications for analysis or remote connectivity.
+
+Created by: Matthew Miller
+
+Required hardware:
+Two of "HiLetgo CP2102 USB 2.0 to TTL Module Serial Converter Adapter Module" or similar
+
+Hardware connections: (see also: "Serial Loopback Wiring.jpg")
+Connect jumper wires between the two USB serial converter boards:
+	Converter 1      Converter 2
+	GND              GND
+	TX               RX
+	RX               TX
+
+
+
+Next, the firmware for the CP2012 chip must be modified to spoof the VR1710
+Reference: https://blog.manzelseet.com/fixing-cp2102-with-custom-vidpid.html
+
+Download the cp210x-cfg utility and compile it for your system
+https://github.com/DiUS/cp210x-cfg
+
+Firmware Configuration:
+Connect ONLY ONE USB serial converter device that will be reprogrammed.
+Set up *ONE* of the serial converters to have the USB identifiers of the VR1710
+*************
+** WARNING ** This will change EVERY SERIAL CONVERTER connected!!!!
+*************
+./cp210x-cfg -V 0f7e -P 9003 -N "Virtual Fluke VR1710 Voltage Recorder"
+
+NOTE: If you need to revert it to factory (or accidently configure more than one),
+you can use the following command:
+sudo ./cp210x-cfg -m 0f7e:9003 -V 10c4 -P ea60 -N "CP2102 USB to UART Bridge Controller"
+
+
+
+Once the hardware is wired and programmed, you can establish the bridge:
+1. On the host where the meter is plugged into, load the driver and allow SSH
+2. On the host where Power Log Classic will run, connect the modified virtual-VR1710 USB serial board
+3. On the host where you want to bridge, connect the unmodified USB serial board
+4. On the host where you want to bridge, run `socat-serial-bridge <[user@]host> [port]` where "host"
+   is the hostname or IP of the system where the real meter is connected and "port" is the SSH port
+5. Open Power Log Classic and begin accessing the meter.
+

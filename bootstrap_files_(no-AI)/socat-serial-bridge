@@ -1,0 +1,75 @@
+#!/bin/bash
+
+# This script forwards the serial port connection from a remote SSH host
+# where the VR1710 is located to a local serail port where a loopback
+# hardware USB-Serial converter is located
+
+# Created by: Matthew Miller
+
+# Server side
+#/sbin/modprobe cp210x
+#echo 0f7e 9003 > /sys/bus/usb-serial/drivers/cp210x/new_id
+#socat -x -b1 file:/dev/ttyUSB0,b500000,cs8,raw,echo=0 tcp-l:54321,reuseaddr,fork
+
+# Client side
+#socat -x -b1 file:/dev/ttyUSB0,b500000,cs8,raw,echo=0 TCP:usbip-br2:54321
+
+
+
+# Connect over SSH without need for server side
+#socat -x file:/dev/ttyUSB0,b500000,cs8,raw,echo=0 EXEC:'ssh usbip-br2 "socat - file:/dev/ttyUSB0,b500000,cs8,raw,echo=0"'
+
+
+
+host=$1
+port=$2
+
+# Print usage information if host is not specified
+if [ "$host" == "" ] ; then
+	echo "Usage: socat-serial-bridge <[user@]host> [port]" 
+	exit
+fi
+
+# Default SSH port if not specified
+if [ "$port" == "" ] ; then
+  port=22
+fi
+
+local_device='/dev/serial/by-id/usb-Silicon_Labs_CP2102_USB_to_UART_Bridge_Controller_0001-if00-port0'
+remote_device='/dev/ttyUSB0'
+baud_rate=500000
+char_size=8
+
+echo ""
+echo "Starting bridge . . ."
+echo "local  = $local_device"
+echo "remote = ${host}:${port}:$remote_device"
+echo "baud   = $baud_rate"
+echo "csize  = $char_size"
+echo ""
+echo "****************************************"
+echo "*                                      *"
+echo "*   Press [CTRL]+[C] to exit . . .     *"
+echo "*                                      *"
+echo "****************************************"
+echo ""
+
+filter() {
+  egrep -v 'socat\[[0-9][0-9]*\] N write\([0-9], 0x[0-9a-f][0-9a-f]*, [0-9][0-9]*\) completed'
+}
+
+trap ctrl_c INT
+
+function ctrl_c() {
+				echo ""
+				echo ""
+        echo "Terminated serial bridge due to [CTRL]+[C]."
+				echo "Done."
+				echo ""
+}
+
+#socat -x file:${local_device},b${baud_rate},cs${char_size},raw,echo=0 EXEC:"ssh ${host} \"socat - file:${remote_device},b${baud_rate},cs${char_size},raw,echo=0\""
+echo "Initializing local connection . . ." >&2
+#socat -d -d file:${local_device},b${baud_rate},cs${char_size},raw,echo=0 EXEC:"ssh -C -p ${port} ${host} \"echo 'Initializing remote connection . . .' >&2; socat -x -d -d - file:${remote_device},b${baud_rate},cs${char_size},raw,echo=0\"" 2> >(filter >&2)
+socat -d -d file:${local_device},b${baud_rate},cs${char_size},raw,echo=0 EXEC:"ssh -C -p ${port} ${host} \"echo 'Initializing remote connection . . .' >&2; socat -x -d -d - file:${remote_device},ispeed=${baud_rate},ospeed=${baud_rate},cs${char_size},raw,echo=0\"" 2> >(filter >&2)
+

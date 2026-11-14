@@ -1,0 +1,10 @@
+# Runtime dependencies for the tools in this directory.
+# Python 3.11 or newer is required.
+#
+# The two serial tools (fpq_serial_meter.py, fpq_serial_replay.py):
+pyserial>=3.5
+
+# Transient export only (fpq_export.py transients / all, and --png).
+# Everything else, including fpq_editor.py, uses the standard library.
+numpy>=1.24
+matplotlib>=3.6

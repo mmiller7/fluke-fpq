@@ -1,0 +1,35 @@
+# fluke-fpq .gitignore
+# The tool is pure source: everything ignored below is either regenerated
+# automatically (bytecode, dist/) or local working material.
+
+# Python bytecode caches (recreated on import; guards run with python3 -B)
+__pycache__/
+*.pyc
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+
+# Virtual environments / packaging, if ever created here
+.venv/
+venv/
+*.egg-info/
+
+# Portable build output: regenerate with `python3 -B build_portable.py`.
+# Prefer attaching dist/ artifacts to a GitHub Release, or `git add -f`
+# the specific files if they must live in the repository.
+#dist/
+
+# Meter captures and tool outputs if a command is run from this folder
+*.bin
+*.interval
+*.fpq
+*.fpq.gz
+*.tar.gz
+*.log
+
+# Editor / OS noise
+*~
+*.swp
+.DS_Store
+.idea/
+.vscode/
