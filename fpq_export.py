@@ -36,7 +36,7 @@ Subcommands:
   summary     high-level overview: nominal settings, recording start/
               stop/duration/rows, event counts (Power Log Summary tabs)
   all         one-shot export: summary, rms CSV, events CSV, transients
-              (npz/CSV, PNG via --png), config JSON -> one directory
+              (npz/CSV), whole-session graph (PNG via --png), config JSON
 
 Input files may be plain `.fpq`, gzip-compressed `.fpq.gz` (detected by
 magic bytes; the extension does not matter) or `-` for the file piped in
@@ -790,7 +790,8 @@ def cmd_compare(args):
 
 def cmd_all(args):
     """One-shot export of everything: summary text, rms CSV, events CSV,
-    transients (npz + csv, + png with --png), config JSON -> outdir."""
+    transients (npz + csv, + png with --png), the whole-session graph
+    (with --png) and config JSON -> outdir."""
     progress = Progress("export", enabled=not getattr(args, "no_progress", False))
     path = args.fpq
     outdir = args.outdir
@@ -845,6 +846,12 @@ def cmd_all(args):
     transient_extract(path, outdir, write_csv=not args.no_csv,
                       write_png=args.png, progress=progress)
     made.append(outdir)
+    # whole-session graph, the same output as `graph`; --png asks for every
+    # PNG this export can produce, not just the per-capture ones
+    if args.png:
+        out_graph = os.path.join(outdir, stem + "_graph.png")
+        graph_session(path, out_graph, progress=progress)
+        made.append(out_graph)
     if progress is not None:
         progress.done()
     print(f"wrote {len(made)} outputs for {stem}")
@@ -1131,6 +1138,35 @@ def print_disclaimer(prog="fluke-fpq"):
     print("* " + "-" * 72, file=sys.stderr)
 
 
+def _break_traces(t, series, bands):
+    """Break voltage traces across bands with no recorded data.
+
+    `t` is a sorted list of datetimes, `series` a sequence of equal-length
+    float sequences, and `bands` a list of (start, end) datetime pairs (the
+    `I` outage and `j` measurement-gap spans).  Rows whose timestamp falls
+    inside a band are masked, and a NaN sample is inserted at every band
+    edge, so matplotlib cannot draw a line across a period the recorder did
+    not measure.  Pure Python (no numpy) so it is unit-testable.
+    """
+    spans = []
+    for start, end in bands:
+        if end < start:
+            start, end = end, start
+        spans.append((start, end))
+    if not spans:
+        return list(t), [list(s) for s in series]
+    inside = [any(start < ti < end for start, end in spans) for ti in t]
+    order = [(ti, i) for i, ti in enumerate(t)]
+    order += [(edge, None) for span in spans for edge in span]
+    order.sort(key=lambda point: point[0])
+    t_out = [point[0] for point in order]
+    out = []
+    for values in series:
+        out.append([float("nan") if i is None or inside[i] else values[i]
+                    for _ti, i in order])
+    return t_out, out
+
+
 def graph_session(path, out, progress=None):
     """Render the whole session as a Power-Log-style PNG.
 
@@ -1203,6 +1239,13 @@ def graph_session(path, out, progress=None):
     ng_min = np.array([r[4] for r in rows], dtype=float)
     ng_avg = np.array([r[5] for r in rows], dtype=float)
     ng_max = np.array([r[6] for r in rows], dtype=float)
+    # No data was recorded inside an outage/gap band, so the trace must not
+    # bridge it: mask the rows and insert NaN edges (matplotlib leaves a gap).
+    band_spans = [(dt, dt + timedelta(seconds=max(0.0, dur)))
+                  for dt, dur in outages + gaps]
+    t_plot, (l1n_min, l1n_avg, l1n_max,
+             ng_min, ng_avg, ng_max) = _break_traces(
+        t, (l1n_min, l1n_avg, l1n_max, ng_min, ng_avg, ng_max), band_spans)
 
     fig, (ax1, ax2) = plt.subplots(
         2, 1, sharex=True, figsize=(16, 9),
@@ -1210,11 +1253,11 @@ def graph_session(path, out, progress=None):
     for ax, lo, avg, hi, colour, label in (
             (ax1, l1n_min, l1n_avg, l1n_max, "#1f4e79", "L1-N"),
             (ax2, ng_min, ng_avg, ng_max, "#2e7d32", "N-G")):
-        ax.fill_between(t, lo, hi, color=colour, alpha=0.16, linewidth=0,
+        ax.fill_between(t_plot, lo, hi, color=colour, alpha=0.16, linewidth=0,
                         label=f"{label} min/max")
-        ax.plot(t, avg, color=colour, lw=0.8, label=f"{label} avg")
-        ax.plot(t, lo, color=colour, lw=0.25, alpha=0.55)
-        ax.plot(t, hi, color=colour, lw=0.25, alpha=0.55)
+        ax.plot(t_plot, avg, color=colour, lw=0.8, label=f"{label} avg")
+        ax.plot(t_plot, lo, color=colour, lw=0.25, alpha=0.55)
+        ax.plot(t_plot, hi, color=colour, lw=0.25, alpha=0.55)
         ax.grid(alpha=0.25)
         ax.set_ylabel(f"{label} (V)")
 
@@ -1298,8 +1341,9 @@ def graph_session(path, out, progress=None):
 
 
 def cmd_graph(args):
-    out = args.out or os.path.join(os.path.dirname(args.fpq),
-                                   outstem(args.fpq) + "_graph.png")
+    # Default to the current directory (like `transients`/`all`), not the
+    # input file's directory: callers often batch inputs from elsewhere.
+    out = args.out or (outstem(args.fpq) + "_graph.png")
     if not out.lower().endswith(".png"):
         out += ".png"
     progress = Progress("export", enabled=not getattr(args, "no_progress", False))
@@ -1397,15 +1441,17 @@ def main():
 
     p = sub.add_parser("all",
                        help="one-shot full export: summary (stdout + txt), "
-                            "spreadsheet CSV, events CSV, transients npz/CSV "
-                            "(+ PNG with --png), settings JSON")
+                            "spreadsheet CSV, events CSV, transients npz/CSV, "
+                            "whole-session graph, settings JSON "
+                            "(PNGs with --png)")
     p.add_argument("fpq")
     p.add_argument("-o", "--outdir", default=".",
                    help="output directory (default: current directory)")
     p.add_argument("--no-csv", action="store_true",
                    help="skip per-capture CSVs (npz/PNG only)")
     p.add_argument("--png", action="store_true",
-                   help="render one graph per transient capture")
+                   help="render the whole-session graph and one graph per "
+                        "transient capture")
     p.add_argument("--all-columns", action="store_true",
                    help="force the 164-column rms layout")
     _add_progress_flag(p)
@@ -1417,7 +1463,8 @@ def main():
              "gap bands, dip/swell/transient markers")
     p.add_argument("fpq")
     p.add_argument("-o", "--out", help="output PNG (default "
-                                       "<fpq>_graph.png)")
+                                       "<fpq-stem>_graph.png in the current "
+                                       "directory)")
     _add_progress_flag(p)
     p.set_defaults(fn=cmd_graph)
 

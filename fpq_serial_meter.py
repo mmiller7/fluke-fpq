@@ -64,6 +64,7 @@ import json
 import os
 import re
 import shutil
+import struct
 import sys
 import tarfile
 import tempfile
@@ -109,6 +110,7 @@ from fpq_dump import (  # noqa: F401  (re-exported public surface)
     DUMP_PREFIX, INTERVAL_LABELS, STANDARD_INTERVALS, INTERVAL_HELP,
     INTERVAL_TYPICAL, interval_typical, interval_capacity_records,
     RING_COUNTER_UNITS, memory_use_percent, memory_used_records,
+    expected_dump_bytes,
     interval_seconds, _item, _strip_page_footers, parse_dump, _median,
     derive_interval,
 )
@@ -1086,9 +1088,21 @@ def _warn_likely_hung(where: str = "") -> None:
         "same way.", file=sys.stderr)
 
 
+def _eta_text(seconds: float) -> str:
+    """Compact remaining-time text: '42 s', '3 m 05 s', '1 h 02 m'."""
+    if seconds < 1:
+        return "<1 s"
+    total = int(round(seconds))
+    if total < 60:
+        return f"{total} s"
+    if total < 3600:
+        return f"{total // 60} m {total % 60:02d} s"
+    return f"{total // 3600} h {(total % 3600) // 60:02d} m"
+
+
 def dump(vr: VR1710, pause: float = 0.3, max_stalls: int = 20,
          force: bool = False, page_ack: bool = PAGE_ACK_DEFAULT,
-         stamp: dict | None = None) -> bytes:
+         stamp: dict | None = None, interval: int | None = None) -> bytes:
     """V -> preamble, C -> dump with the 0x06 ACK pump; returns ALL rx bytes.
 
     The meter streams continuously; by default the host ACKs each complete
@@ -1151,6 +1165,10 @@ def dump(vr: VR1710, pause: float = 0.3, max_stalls: int = 20,
         # same paused memory contains new records (used by the download
         # sidecar to keep the true arm time on repeated reads).
         stamp["counter"] = val
+    mem = _memory_text(val, interval)
+    if mem is not None:
+        # Same wording as `info`, printed before the arm pauses the recorder.
+        print(f"< memory used: {mem}")
     if force and not val:
         # Diagnostic/trigger flow (owner 2026-10-27): erase -> set config ->
         # read memory -> continue. The empty arm answers a zero preamble and
@@ -1198,6 +1216,13 @@ def dump(vr: VR1710, pause: float = 0.3, max_stalls: int = 20,
                            "tail")
     out += pre
     print(f"< C Q / R / X 0 / V   preamble: {escape(pre)}")
+    # The preamble is the `v` counter, so the stream size is known up front:
+    # item bytes + page framing + the closing 0x04.  That turns the progress
+    # lines into a percentage and an ETA.  A glitched counter (the meters
+    # occasionally answer a stray value) is ignored rather than trusted.
+    expected = expected_dump_bytes(struct.unpack("<I", pre)[0])
+    if expected is not None and expected > 4 * RING_COUNTER_UNITS:
+        expected = None
     if pre == b"\x00\x00\x00\x00":
         # Fallback when v was non-zero but the arm still returned zero: send
         # C to clear the armed state, then stop. An erased memory streams
@@ -1262,8 +1287,13 @@ def dump(vr: VR1710, pause: float = 0.3, max_stalls: int = 20,
         vr.ser.timeout = pause
         return False
 
-    print("< dump started (the recorder is streaming; Ctrl-C to abort)",
-          flush=True)
+    if expected:
+        print(f"< dump started: about {expected:,} bytes "
+              f"({expected / 1048576:.2f} MB) expected; the recorder is "
+              f"streaming; Ctrl-C to abort", flush=True)
+    else:
+        print("< dump started (the recorder is streaming; Ctrl-C to abort)",
+              flush=True)
     _ARMED_DUMP_INTERRUPTED = True
     try:
         while not got_04:
@@ -1280,8 +1310,19 @@ def dump(vr: VR1710, pause: float = 0.3, max_stalls: int = 20,
                         or now - last_report >= 10.0):
                     last_progress = len(out)
                     last_report = now
-                    print(f"  ... {len(out):,} bytes, {acked:,} ACKs, "
-                          f"{now - started:.0f} s", flush=True)
+                    elapsed = now - started
+                    seen = f"{len(out):,}"
+                    pct = eta = ""
+                    if expected:
+                        seen += f" / {expected:,}"
+                        fraction = 100.0 * len(out) / expected
+                        pct = f" ({min(100.0, fraction):.1f}%)"
+                        rate = len(out) / elapsed if elapsed > 0 else 0.0
+                        if rate > 0 and len(out) < expected:
+                            remaining = (expected - len(out)) / rate
+                            eta = f", ETA {_eta_text(remaining)}"
+                    print(f"  ... {seen} bytes{pct}, {acked:,} ACKs, "
+                          f"{elapsed:.0f} s{eta}", flush=True)
                 # ACK each full page as soon as its last byte arrives.  Keep
                 # any bytes already received past the boundary (and the byte
                 # `send_ack` reads back) so the next page is counted from its
@@ -1320,8 +1361,12 @@ def dump(vr: VR1710, pause: float = 0.3, max_stalls: int = 20,
             pass
         raise
     _ARMED_DUMP_INTERRUPTED = False
+    elapsed = time.monotonic() - started
+    closed = f"{len(out):,} bytes"
+    if expected:
+        closed += f" ({min(100.0, 100.0 * len(out) / expected):.1f}%)"
     print(f"{acked} x 0x06 ACKs sent; final ACK answered with 0x04 "
-          f"(dump closed, {time.monotonic() - started:.1f} s)", flush=True)
+          f"(dump closed, {closed}, {elapsed:.1f} s)", flush=True)
     return bytes(out)
 
 # ---------------------------------------------------------------------------
@@ -1403,6 +1448,22 @@ def _read_info(args):
     return data
 
 
+def _memory_text(counter, interval) -> str | None:
+    """'52.2% (v ... write units; ... records at 2 s)' or None.
+
+    Shared by `info` and the pre-dump line so both report the same figure.
+    """
+    pct = memory_use_percent(counter, interval)
+    if pct is None:
+        return None
+    cap = interval_capacity_records(interval) if interval is not None else None
+    used = memory_used_records(counter, interval)
+    detail = f"v {counter:,} of {RING_COUNTER_UNITS:,} write units"
+    if cap and used is not None:
+        detail += f"; {used:,} of {cap:,} records at {interval} s"
+    return f"{pct:.1f}% ({detail})"
+
+
 def _info_lines(data):
     """Human-readable info block (shared by `info` and `configure`)."""
     lines = [f"banner: {data['banner']!r}"]
@@ -1415,15 +1476,12 @@ def _info_lines(data):
     iv = data.get("interval_seconds")
     lines.append(f"recording interval: {iv} s" if iv is not None else
                  "recording interval: (unreadable)")
-    pct = data.get("memory_used_percent")
-    if pct is not None:
-        cap = data.get("memory_capacity_records")
-        used = data.get("memory_used_records")
-        detail = (f"v {data['record_counter_v']:,} of "
-                  f"{data.get('memory_capacity_units'):,} write units")
-        if cap and used is not None:
-            detail += f"; {used:,} of {cap:,} records at {iv} s"
-        lines.append(f"memory used: {pct:.1f}% ({detail})")
+    mem = None
+    if data.get("memory_used_percent") is not None:
+        mem = (_memory_text(data.get("record_counter_v"), iv)
+               or f"{data['memory_used_percent']:.1f}%")
+    if mem is not None:
+        lines.append(f"memory used: {mem}")
     elif data.get("memory_capacity_units"):
         lines.append(f"memory used: (estimate unavailable; ring "
                      f"{data.get('memory_capacity_units'):,} write units)")
@@ -1923,7 +1981,9 @@ def cmd_download(args):
     time.sleep(args.delay)
     stamp: dict = {}
     data = dump(vr, args.pause, force=getattr(args, "arm_empty", False),
-                page_ack=getattr(args, "page_ack", True), stamp=stamp)
+                page_ack=getattr(args, "page_ack", True), stamp=stamp,
+                interval=iv if iv is not None else getattr(args, "interval",
+                                                            None))
     args._arm_time = stamp.get("arm")
     if args._arm_time is not None:
         record_session_event("pause", at=args._arm_time,

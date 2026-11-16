@@ -148,6 +148,24 @@ def memory_use_percent(counter: int | None, interval: int | None) -> float | Non
                / float(RING_COUNTER_UNITS) * 100.0)
 
 
+def expected_dump_bytes(counter: int | None) -> int | None:
+    """Total bytes a dump of `counter` write units will stream.
+
+    The `v` counter (also the 4-byte V preamble) counts item-stream bytes,
+    so the reply is: 4-byte preamble + one 1,029-byte page per 1,024
+    payload bytes (the last page is padded) + the closing 0x04.
+    Reproduces the exact size of every fixture with a usable counter (30_,
+    35_, 43_, 44_, 46_, 50_, 67_, 77_, 85_, 87_, 89_-96_, 99_, 100_), which
+    makes it usable for a download percentage and ETA.  82_ is the one
+    stream with an interior duplicate page run, so its file is larger than
+    this estimate.  Returns None for a missing/zero counter.
+    """
+    if counter is None or int(counter) <= 0:
+        return None
+    pages = -(-int(counter) // PAGE_PAYLOAD)
+    return 4 + pages * PAGE_STRIDE + 1
+
+
 def interval_seconds(value) -> int:
     """Parse and validate a recording interval ('2', '2s', '1m', ...).
 

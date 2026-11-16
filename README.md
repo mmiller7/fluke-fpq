@@ -418,6 +418,11 @@ recording interval:
   the 2026-11-04 gap postmortem (project notes);
 - `--stats` prints a structure fingerprint (preamble, pages, CRCs, rows,
   blocks, counters, skipped bytes, wrapped rows);
+- before arming, `download` prints the memory fill in the same form as
+  `info` (`memory used: 52.2% (v … write units; … records at 2 s)`), then
+  the expected stream size. Each download progress line shows bytes
+  received / expected, percent complete, ACKs, elapsed time and an ETA, and
+  the closing line shows the final size and 100%;
 - an erased memory answers the dump arm with a zero preamble and streams
   nothing, so the tool reports "memory is empty", writes no `.fpq`, and
   never arms the dump when `v` reads 0.
@@ -652,10 +657,10 @@ real output from sample recordings, trimmed).
 | Command | Output |
 |---|---|
 | `fpq_export.py summary FICH.fpq...` | high-level overview to stdout (nominal settings, start/stop/duration, rows, event counts) — below |
-| `fpq_export.py all FICH.fpq [-o DIR] [--png] [--all-columns] [--no-csv]` | one-shot full export: summary (stdout + `<stem>_summary.txt`), spreadsheet CSV, events CSV, transients [`<stem>_T.npz` + per-capture CSV/PNG], settings JSON — all into DIR (default: current directory) |
+| `fpq_export.py all FICH.fpq [-o DIR] [--png] [--all-columns] [--no-csv]` | one-shot full export: summary (stdout + `<stem>_summary.txt`), spreadsheet CSV, events CSV, transients [`<stem>_T.npz` + per-capture CSV/PNG], whole-session `<stem>_graph.png` (with `--png`), settings JSON — all into DIR (default: current directory) |
 | `fpq_export.py spreadsheet FICH.fpq [-o OUT.csv] [--all-columns]` | Power Log Spreadsheet-identical CSV (below; output file keeps the `_rms.csv` name) |
 | `fpq_export.py events FICH.fpq [-o OUT.csv]` | one row per event (below) |
-| `fpq_export.py graph FICH.fpq [-o OUT.png]` | whole-session PNG: L1N/N-G min/avg/max traces, outage/gap bands, dip/swell/transient markers |
+| `fpq_export.py graph FICH.fpq [-o OUT.png]` | whole-session PNG: L1N/N-G min/avg/max traces, outage/gap bands, dip/swell/transient markers; the trace is broken (no line) across an `I`/`j` band, where no data was recorded. Default output: `<fpq-stem>_graph.png` in the current directory |
 | `fpq_export.py transients FICH.fpq... [-o DIR] [--no-csv] [--png]` | per-capture CSV/PNG + one `<stem>_T.npz` |
 | `fpq_export.py settings FICH.fpq...` | saved recorder settings JSON to stdout (pass several files to compare) |
 | `fpq_export.py debug inventory FICH.fpq...` | tolerant record inventory/counts (survives a damaged stream) |
@@ -665,6 +670,8 @@ real output from sample recordings, trimmed).
 `-o` for `spreadsheet`/`events` is a CSV path (default: `<input>_rms.csv` next to the
 input file; `<input>_events.csv` is not created unless asked).
 `transients -o DIR` is a directory (default: the current directory).
+`graph -o` is a PNG path (default: `<input-stem>_graph.png` in the current
+directory).
 
 ### Cutting a session — `src_common/fpq_editor.py`
 
@@ -820,3 +827,28 @@ Remote bridge notes:
 - The tool's lock preflight recognises `<FLUKE_LOCK_DIR>/meter-pty`. If the
   bridge is asked for a different pty path, set `FLUKE_LOCK_DIR` to the
   bridge's lock directory so both processes use the same lock.
+
+## Changelog
+
+Dated entries, newest first. This project has no numbered releases; every
+entry describes shipped CLI behaviour. Development before 2026-11-13 is
+recorded in the project-level handoff notes, which are not shipped here.
+
+### 2026-11-15
+
+- `fpq_export.py graph`: the default output is
+  `<fpq-stem>_graph.png` in the **current directory** (it previously landed
+  next to the input `.fpq`, unlike `transients`/`all`).
+- `fpq_export.py graph`: the L1-N and N-G traces are now broken across `I`
+  (outage) and `j` (measurement gap) bands. They no longer draw a line
+  through a period in which the recorder stored no data.
+- `fpq_export.py all --png`: also writes the whole-session
+  `<stem>_graph.png`, so the one-shot export contains the same graph as the
+  `graph` command, not only the per-transient PNGs.
+- `fpq_serial_meter.py download`: prints the memory fill before arming,
+  using the same wording as `info` (`memory used: 52.2% (v … write units;
+  … records at 2 s)`), and states the expected stream size.
+- `fpq_serial_meter.py download`: each progress line now shows received /
+  expected bytes, percent complete and an ETA in addition to the ACK count
+  and elapsed time; the closing line reports the final size and 100%.
+
